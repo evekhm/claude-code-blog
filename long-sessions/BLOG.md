@@ -332,6 +332,14 @@ output would help.
 
 Anthropic is actively shipping solutions to many of these problems:
 
+- **`/goal`** sets a completion condition and Claude keeps working
+  across turns until it's met. A small fast model evaluates after
+  each turn whether the condition holds. Great for tasks with a
+  verifiable end state ("all tests pass", "lint is clean") within
+  a single session. It doesn't solve context overflow for long
+  runs — you'd still hit the same wall from Attempt 1 — but for
+  30-60 minute autonomous tasks it removes the need for an
+  orchestrator entirely.
 - **Session continuation** (`--continue` / `--resume <session_id>`)
   lets you chain sessions without STATUS.md as the only handoff
   mechanism. A phase can resume exactly where the last left off.
@@ -342,8 +350,10 @@ Anthropic is actively shipping solutions to many of these problems:
   auto-discovery for faster scripted startup. Recommended for CI.
 
 The DIY orchestrator approach described in this post still works
-and gives you full control. But check Anthropic's latest docs —
-the managed tooling is catching up fast.
+and gives you full control for long overnight runs. But for shorter
+autonomous tasks, check `/goal` first — it may be all you need.
+And keep an eye on Anthropic's latest docs — the managed tooling
+is catching up fast.
 
 ## Try It Yourself
 
