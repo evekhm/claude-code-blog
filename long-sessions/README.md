@@ -3,7 +3,7 @@
 *What I learned from two overnight runs: context management, phased orchestration, and why your pipeline needs a watchdog.*
 
 ---
-
+![Overview](img.jpeg)
 ## The Setup
 
 I'm building a pipeline where an agent rewrites its own instruction
