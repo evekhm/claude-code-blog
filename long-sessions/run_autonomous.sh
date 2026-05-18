@@ -233,9 +233,14 @@ for phase in $(seq "$START_PHASE" "$END_PHASE"); do
     echo ""
 
     if [ $EXIT_CODE -ne 0 ]; then
-        log "WARNING: Phase $phase exited with code $EXIT_CODE"
+        log "ERROR: Phase $phase failed (exit code: $EXIT_CODE)"
         log "Check $PHASE_LOG for details"
+        log "Stopping — later phases depend on this one."
+        exit 1
     fi
+
+    # Mark phase as successfully completed (used by watchdog)
+    touch "$RUN_DIR/.phase_${phase}_done"
 
     sleep 5
 done

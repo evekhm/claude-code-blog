@@ -4,11 +4,14 @@
 # ============================================================================
 #
 # Monitors the orchestrator process and restarts it if it dies.
-# Checks every 2 minutes. If the same phase fails twice, launches a
-# Claude diagnostic session to read the log and attempt a fix.
+# If the same phase fails twice, launches a Claude diagnostic session
+# to read the log and attempt a fix before retrying.
 #
 # Usage:
-#   ./watchdog.sh <run-dir> <orchestrator-pid>
+#   ./watchdog.sh <run-dir> <orchestrator-pid> [orchestrator-script]
+#
+# Environment:
+#   WATCHDOG_INTERVAL  — check interval in seconds (default: 120)
 #
 # Launched automatically by run_autonomous.sh --with-watchdog.
 # ============================================================================
@@ -18,16 +21,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Arguments
-RUN_DIR="${1:?Usage: watchdog.sh <run-dir> <orchestrator-pid>}"
-ORCH_PID="${2:?Usage: watchdog.sh <run-dir> <orchestrator-pid>}"
+RUN_DIR="${1:?Usage: watchdog.sh <run-dir> <orchestrator-pid> [orchestrator-script]}"
+ORCH_PID="${2:?Usage: watchdog.sh <run-dir> <orchestrator-pid> [orchestrator-script]}"
+ORCHESTRATOR_SCRIPT="${3:-$SCRIPT_DIR/run_autonomous.sh}"
 WATCHDOG_LOG="$RUN_DIR/watchdog.log"
 
+CHECK_INTERVAL="${WATCHDOG_INTERVAL:-120}"
 MAX_RESTARTS=3
 RESTART_COUNT=0
 LAST_FAILED_PHASE=""
 SAME_PHASE_FAILURES=0
-
-ORCHESTRATOR_SCRIPT="$SCRIPT_DIR/run_autonomous.sh"
 
 wlog() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$WATCHDOG_LOG"
@@ -40,8 +43,8 @@ is_orchestrator_running() {
 detect_last_completed_phase() {
     local last=0
     for i in 1 2 3 4 5; do
-        local log="$RUN_DIR/phase_${i}.log"
-        if [ -f "$log" ] && [ -s "$log" ]; then
+        # Use completion marker (not log size — a crashed phase has a partial log)
+        if [ -f "$RUN_DIR/.phase_${i}_done" ]; then
             last=$i
         else
             break
@@ -102,9 +105,11 @@ DIAG
 
 wlog "Watchdog started for run: $RUN_DIR"
 wlog "Monitoring orchestrator PID: $ORCH_PID"
+wlog "Orchestrator script: $ORCHESTRATOR_SCRIPT"
+wlog "Check interval: ${CHECK_INTERVAL}s"
 
 while true; do
-    sleep 120  # Check every 2 minutes
+    sleep "$CHECK_INTERVAL"
 
     if is_orchestrator_running; then
         LAST_PHASE=$(detect_last_completed_phase)
@@ -148,7 +153,7 @@ while true; do
     # If same phase failed twice, run diagnosis before retrying
     if [ "$SAME_PHASE_FAILURES" -ge 2 ]; then
         wlog "Phase $NEXT_PHASE failed $SAME_PHASE_FAILURES times — running Claude diagnostic"
-        diagnose_and_fix "$LAST_PHASE"
+        diagnose_and_fix "$NEXT_PHASE"
     fi
 
     # Restart from next phase
