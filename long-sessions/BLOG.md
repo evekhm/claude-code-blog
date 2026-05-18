@@ -345,15 +345,24 @@ The DIY orchestrator approach described in this post still works
 and gives you full control. But check Anthropic's latest docs —
 the managed tooling is catching up fast.
 
+## Try It Yourself
+
+All scripts from this post are in the [companion repo](README.md)
+— orchestrator, watchdog, example CLAUDE.md and STATUS.md, plus an
+end-to-end test you can run in ~3 minutes. The test creates a
+deliberate bug in a Python script, lets the pipeline crash, and
+watches the watchdog launch a Claude diagnostic session that reads
+the error log, fixes the bug, and restarts the pipeline to
+completion. No configuration needed — just `nohup ./test_e2e.sh`
+and `tail -f` the watchdog log.
+
 ## A Note on This Approach
 
 This is not production-grade tooling. It's a conceptual demonstration
 of the underlying problems — context limits, instruction dilution,
-session lifecycle — and one way to work around them. The shell scripts
-here are intentionally simple so you can see the mechanics.
+session lifecycle — and one way to work around them. 
 
-Better tooling will appear (and some already has — see the section
-above). But understanding *why* these problems exist and *what*
+Better tooling will appear. But understanding *why* these problems exist and *what*
 you're actually solving gives you the background to evaluate any
 tool that claims to solve autonomous agent orchestration. The
 patterns — phased execution, artifact-based handoff, output
