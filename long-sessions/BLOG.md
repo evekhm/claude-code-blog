@@ -309,8 +309,8 @@ nohup ./run_autonomous.sh --use-goal > /dev/null 2>&1 &
 
 ## Attempt 2: The Phased Approach
 
-I ran `nohup` in a terminal, started the orchestrator with `/goal`,
-and went to sleep.
+I ran `nohup` in a terminal, started the watchdog, and went to
+sleep.
 
 **All 5 phases completed successfully. Zero failures. 5 hours 44
 minutes.** `/goal` handled the hiccups within each phase.
@@ -322,7 +322,7 @@ budget. Each phase ran comfortably within its context window.
 ### The Meta Angle
 
 Here's the part that still impresses me: **Claude Code built its
-own reliability tooling.** The orchestrator, the `/goal` integration,
+own reliability tooling.** The watchdog script, the orchestrator,
 the `< /dev/null` fix, the output redirection pattern — all
 of it was written by Claude during interactive sessions where I
 described the problem and it wrote the solution.
