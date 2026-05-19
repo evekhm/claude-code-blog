@@ -1,6 +1,6 @@
 # Running Claude Code Autonomously Overnight — What Breaks and How to Fix It.
 
-*What I learned from two overnight runs: context management, phased orchestration, and why your pipeline needs a watchdog.*
+*Context limits, phased orchestration, and self-healing goals.*
 
 ---
 ![Overview](img.jpeg)
@@ -332,14 +332,6 @@ output would help.
 
 Anthropic is actively shipping solutions to many of these problems:
 
-- **`/goal`** sets a completion condition and Claude keeps working
-  across turns until it's met. A small fast model evaluates after
-  each turn whether the condition holds. Great for tasks with a
-  verifiable end state ("all tests pass", "lint is clean") within
-  a single session. It doesn't solve context overflow for long
-  runs — you'd still hit the same wall from Attempt 1 — but for
-  30-60 minute autonomous tasks it removes the need for an
-  orchestrator entirely.
 - **Session continuation** (`--continue` / `--resume <session_id>`)
   lets you chain sessions without STATUS.md as the only handoff
   mechanism. A phase can resume exactly where the last left off.
@@ -349,22 +341,72 @@ Anthropic is actively shipping solutions to many of these problems:
 - **`--bare` mode** skips hooks, plugins, and CLAUDE.md
   auto-discovery for faster scripted startup. Recommended for CI.
 
-The DIY orchestrator approach described in this post still works
-and gives you full control for long overnight runs. But for shorter
-autonomous tasks, check `/goal` first — it may be all you need.
-And keep an eye on Anthropic's latest docs — the managed tooling
-is catching up fast.
+Check Anthropic's latest docs — the managed tooling is catching
+up fast.
+
+## Update: `/goal` Replaces the Watchdog
+
+After publishing this post, I learned about
+[`/goal`](https://code.claude.com/docs/en/goal) — a built-in
+Claude Code feature that makes the custom watchdog unnecessary.
+
+**The problem the watchdog solved**: `claude --print` runs one
+turn. If a script fails, Claude reports the error and exits with
+code 0 (Claude ran fine, even though the task failed). The
+orchestrator has no way to know the task didn't succeed. So we
+built a watchdog to detect failures externally and restart.
+
+**What `/goal` does instead**: you set a completion condition, and
+after each turn a small fast model (Haiku) evaluates whether the
+condition is met. If not, Claude automatically starts another turn.
+If a script fails, Claude sees the error, fixes it, and retries —
+all within the same phase, no external watchdog needed.
+
+```bash
+# Without /goal: one turn, Claude reports error, exits
+claude -p "Run analyze.py and save results"
+# → Claude runs script, sees NameError, reports it, done. Exit 0.
+
+# With /goal: Claude keeps working until the condition holds
+claude -p "/goal Run analyze.py. Goal: results.txt has valid JSON"
+# → Turn 1: runs script, NameError
+# → Evaluator: "results.txt doesn't exist — not met"
+# → Turn 2: fixes the bug, retries, saves results
+# → Evaluator: "results.txt has valid JSON — met!"
+```
+
+We integrated `/goal` into the orchestrator (`--use-goal`) and
+tested it with the same buggy script from the watchdog test.
+Claude found the NameError, fixed `counnt` → `len(data)`, and
+retried — all within one phase, in ~37 seconds. No watchdog, no
+restarts, no diagnostic session.
+
+**The phased orchestrator still matters.** `/goal` makes each
+phase self-healing, but it doesn't solve context overflow — a
+phase that runs too long will still hit the context wall from
+Attempt 1. The orchestrator's job is to break work into fresh
+sessions. `/goal`'s job is to make each session resilient.
+
+```bash
+# The updated approach: phased orchestrator + /goal
+nohup ./run_autonomous.sh --use-goal > /dev/null 2>&1 &
+```
 
 ## Try It Yourself
 
 All scripts from this post are in the [companion repo](README.md)
-— orchestrator, watchdog, example CLAUDE.md and STATUS.md, plus an
-end-to-end test you can run in ~3 minutes. The test creates a
-deliberate bug in a Python script, lets the pipeline crash, and
-watches the watchdog launch a Claude diagnostic session that reads
-the error log, fixes the bug, and restarts the pipeline to
-completion. No configuration needed — just `nohup ./test_e2e.sh`
-and `tail -f` the watchdog log.
+— orchestrator, example CLAUDE.md and STATUS.md, plus two
+end-to-end tests you can run in minutes. Both use the same
+deliberate bug (a Python `NameError`):
+
+- **`test_goal.sh`** (~2 min) — `/goal` mode, where Claude fixes
+  the bug and retries within the same phase. The recommended
+  approach.
+- **`test_e2e.sh`** (~3 min) — the original watchdog approach,
+  included to demonstrate the concept of external crash recovery.
+
+No configuration required — just `nohup ./test_goal.sh` and
+`tail -f` the logs.
 
 ## A Note on This Approach
 
@@ -372,30 +414,30 @@ This is not production-grade tooling. It's a conceptual demonstration
 of the underlying problems — context limits, instruction dilution,
 session lifecycle — and one way to work around them. 
 
-Better tooling will appear. But understanding *why* these problems exist and *what*
-you're actually solving gives you the background to evaluate any
-tool that claims to solve autonomous agent orchestration. The
-patterns — phased execution, artifact-based handoff, output
-redirection, watchdog recovery — will apply regardless of the
-specific implementation.
+Better tooling will appear. But understanding *why* these problems
+exist and *what* you're actually solving gives you the background
+to evaluate any tool that claims to solve autonomous agent
+orchestration. The patterns — phased execution, artifact-based
+handoff, output redirection, self-healing goals — will apply
+regardless of the specific implementation.
 
 ## Summary
 
-| Problem | Attempt 1 (IDE chat) | Attempt 2 (phased CLI) |
+| Problem | Attempt 1 (IDE chat) | Attempt 2 (phased CLI + /goal) |
 |---------|-----------|-----------|
-| Context | Stalled after 4 cycles | Zero issues |
+| Context | Stalled after 4 cycles | Fresh context per phase |
 | Output | Raw logs in context | Redirected to disk |
 | Handoff | Manual restart | STATUS.md |
 | Launch | Left chat session open | `nohup` in terminal |
-| Recovery | None | Watchdog + Claude diagnostic |
-| Results | Stalled, half done | All cycles completed |
+| Recovery | None | `/goal` self-heals within each phase |
+| Results | Stalled, half done | All phases completed |
 
 The fundamental insight: **treat autonomous Claude Code sessions
 like a CI pipeline, not like a conversation.** Break work into
-phases. Each phase is a job. Jobs communicate through artifacts
-(STATUS.md, files on disk), not conversation context. Launch the
-orchestrator yourself with `nohup` — don't rely on a chat session
-staying alive. Add a watchdog. Run it and go to sleep.
+phases. Each phase is a job with a `/goal` condition. Jobs
+communicate through artifacts (STATUS.md, files on disk), not
+conversation context. Launch the orchestrator yourself with
+`nohup` and go to sleep.
 
 ---
 

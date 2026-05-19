@@ -13,6 +13,7 @@
 #   ./run_autonomous.sh --dry-run                # Print prompts, don't run
 #   ./run_autonomous.sh --model sonnet           # Use a specific model
 #   ./run_autonomous.sh --with-watchdog          # Auto-restart on failure
+#   ./run_autonomous.sh --use-goal               # Use /goal for self-healing phases
 #
 # How it works:
 #   1. Each phase launches `claude --print` with a self-contained prompt
@@ -36,6 +37,7 @@ MODEL="opus"
 MAX_BUDGET="10.00"
 RUN_DIR_OVERRIDE=""
 WITH_WATCHDOG=false
+USE_GOAL=false
 
 # ---- Parse arguments ----
 while [[ $# -gt 0 ]]; do
@@ -47,6 +49,7 @@ while [[ $# -gt 0 ]]; do
         --budget)        MAX_BUDGET="$2"; shift 2 ;;
         --run-dir)       RUN_DIR_OVERRIDE="$2"; shift 2 ;;
         --with-watchdog) WITH_WATCHDOG=true; shift ;;
+        --use-goal)      USE_GOAL=true; shift ;;
         -h|--help)
             sed -n '2,/^$/p' "$0" | grep '^#' | sed 's/^# \?//'
             exit 0
@@ -106,16 +109,21 @@ RULES FOR THIS SESSION:
 #   - Specify the run directory for output files
 #   - List concrete tasks, not vague goals
 #   - End with "commit results, update STATUS.md"
+#
+# With --use-goal, each phase runs as a /goal command. Claude keeps working
+# across turns until the goal condition is met. This makes phases self-healing:
+# if a script fails, Claude fixes it and retries within the same phase.
 # ============================================================================
 
 phase_prompt() {
     local phase="$1"
     local run_dir="$2"
 
+    local task goal_condition
+
     case "$phase" in
         1)
-cat <<PROMPT
-Read STATUS.md for context. Execute Phase 1.
+            task="Read STATUS.md for context. Execute Phase 1.
 
 Run directory: $run_dir
 
@@ -123,14 +131,12 @@ TASKS:
 1. [Your first task — e.g., set up test data, run baseline]
 2. [Your second task — e.g., generate initial results]
 3. Save results to $run_dir/
-4. Commit results, update STATUS.md with what was accomplished
+4. Commit results, update STATUS.md with what was accomplished"
 
-$CONTEXT_RULES
-PROMPT
+            goal_condition="Phase 1 tasks are complete, results saved to $run_dir/, and STATUS.md shows Phase 1 done"
             ;;
         2)
-cat <<PROMPT
-Read STATUS.md for context. Execute Phase 2.
+            task="Read STATUS.md for context. Execute Phase 2.
 
 Run directory: $run_dir
 
@@ -138,28 +144,24 @@ TASKS:
 1. [Build on Phase 1 results — e.g., run experiments, iterate]
 2. [Your second task]
 3. Save results to $run_dir/
-4. Commit results, update STATUS.md
+4. Commit results, update STATUS.md"
 
-$CONTEXT_RULES
-PROMPT
+            goal_condition="Phase 2 tasks are complete, results saved to $run_dir/, and STATUS.md shows Phase 2 done"
             ;;
         3)
-cat <<PROMPT
-Read STATUS.md for context. Execute Phase 3.
+            task="Read STATUS.md for context. Execute Phase 3.
 
 Run directory: $run_dir
 
 TASKS:
 1. [Final phase — e.g., validate, analyze, write summary]
 2. Save results to $run_dir/
-3. Commit results, update STATUS.md with final state
+3. Commit results, update STATUS.md with final state"
 
-$CONTEXT_RULES
-PROMPT
+            goal_condition="Phase 3 tasks are complete, results saved to $run_dir/, and STATUS.md shows Phase 3 done"
             ;;
         retro)
-cat <<PROMPT
-You just finished a multi-phase autonomous run. Write a retrospective.
+            task="You just finished a multi-phase autonomous run. Write a retrospective.
 
 Run directory: $run_dir
 Phase logs: $run_dir/phase_1.log through phase_${END_PHASE}.log
@@ -172,16 +174,27 @@ Write $run_dir/session_retro.md covering:
 5. Recommendations
 
 Be honest and specific. Use actual log data, not speculation.
-Do NOT commit — just write the retro file.
+Do NOT commit — just write the retro file."
 
-$CONTEXT_RULES
-PROMPT
+            goal_condition="$run_dir/session_retro.md exists with a complete retrospective"
             ;;
         *)
             echo "ERROR: Unknown phase $phase" >&2
             return 1
             ;;
     esac
+
+    if $USE_GOAL; then
+        echo "/goal $task
+
+$CONTEXT_RULES
+
+GOAL CONDITION: $goal_condition"
+    else
+        echo "$task
+
+$CONTEXT_RULES"
+    fi
 }
 
 # ============================================================================
@@ -194,6 +207,7 @@ log "=============================================="
 log "Run directory: $RUN_DIR"
 log "Phases: $START_PHASE → $END_PHASE + retro"
 log "Model: $MODEL | Budget: \$$MAX_BUDGET per phase"
+$USE_GOAL && log "Mode: /goal (self-healing phases)"
 log ""
 
 for phase in $(seq "$START_PHASE" "$END_PHASE"); do

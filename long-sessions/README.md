@@ -24,7 +24,8 @@ npm install -g @anthropic-ai/claude-code
 | [watchdog.sh](watchdog.sh) | Monitors the orchestrator, restarts on failure, runs Claude diagnostics |
 | [example-CLAUDE.md](example-CLAUDE.md) | Context management rules to add to your project's CLAUDE.md |
 | [example-STATUS.md](example-STATUS.md) | Sample STATUS.md handoff document |
-| [test_e2e.sh](test_e2e.sh) | End-to-end test with a deliberate bug for Claude to diagnose and fix |
+| [test_e2e.sh](test_e2e.sh) | End-to-end test: watchdog detects crash, Claude diagnoses and fixes |
+| [test_goal.sh](test_goal.sh) | End-to-end test: `/goal` mode, Claude self-heals within the phase |
 
 ## Quick Start
 
@@ -147,6 +148,78 @@ rm -rf runs/test_*
 rm -f STATUS.md
 ```
 
+## Alternative: `/goal` Mode (Self-Healing Phases)
+
+Instead of relying on the watchdog to detect and fix failures, you can use Claude Code's [`/goal`](https://code.claude.com/docs/en/goal) command to make each phase self-healing.
+
+### How `/goal` changes the behavior
+
+Without `/goal`, `claude --print` runs **one turn**. If a script fails, Claude reports the error and exits. The process returns exit code 0 (Claude ran fine, even though the task failed). The orchestrator has no way to know the task didn't succeed.
+
+With `/goal`, after each turn a small fast model (Haiku) evaluates whether the **goal condition** is met — for example, *"does results.txt exist with valid JSON?"*. If not, `/goal` automatically starts another turn. Claude sees the error from the previous turn, fixes the bug, and retries. The evaluator checks again. This repeats until the condition is met or the budget runs out.
+
+The key difference: `/goal` adds an **external judge** that checks whether the task succeeded, not just whether Claude's process ran. This is what makes phases self-healing.
+
+### Run the `/goal` test
+
+Same buggy `analyze.py` script (NameError: `counnt`), but Claude fixes it within Phase 2 instead of crashing and waiting for the watchdog:
+
+```bash
+nohup ./test_goal.sh > /dev/null 2>&1 &
+tail -f runs/goal_*/master.log
+```
+
+**Duration**: ~2 minutes. **Cost**: ~$0.50-1 (fewer sessions than the watchdog test).
+
+### Expected output
+
+```
+[...] GOAL TEST: /goal self-healing phases
+[...] Created buggy analyze.py (has NameError: 'counnt')
+[...] Starting phases 1 → 3 (using /goal)
+[...] --- Phase 1 (/goal) ---
+[...] Running phase 1 with /goal...
+[...] Phase 1 DONE
+[...] --- Phase 2 (/goal) ---
+[...] Running phase 2 with /goal...
+[...] Fixed typo in analyze.py (counnt → len(data)), ran script,
+      saved valid JSON to results.txt, and marked Phase 2 complete
+[...] Phase 2: results.txt exists — /goal succeeded
+[...] Phase 2 DONE
+[...] --- Phase 3 (/goal) ---
+[...] Phase 3 DONE
+[...] --- Retrospective (/goal) ---
+[...] Retrospective written: .../session_retro.md
+[...] PASS: analyze.py was fixed by Claude during /goal phase
+[...] PASS: results.txt exists
+[...] Content: {"total": 60, "average": 20.0, "count": 3}
+```
+
+Notice Phase 2 — Claude ran the buggy script, hit the NameError, fixed `counnt` → `len(data)`, retried, and succeeded. All within one phase, in ~37 seconds. No watchdog, no restart, no separate diagnostic session.
+
+### Watchdog vs `/goal` — comparison
+
+| | Watchdog (`test_e2e.sh`) | `/goal` (`test_goal.sh`) |
+|---|---|---|
+| **How it recovers** | External: watchdog polls, detects crash, launches Claude diagnostic, restarts | Internal: evaluator detects failure, Claude retries within the phase |
+| **Number of Claude sessions** | 5+ (phases + diagnostic + retries) | 4 (one per phase, retries happen inside) |
+| **Duration** | ~3 min (watchdog polling adds latency) | ~2 min (no polling delay) |
+| **Handles process crashes** | Yes | No |
+| **Handles context overflow** | Yes (each restart is fresh) | No (retries share the same context) |
+| **Best for** | Long overnight runs, infrastructure failures | Shorter tasks, script-level bugs |
+
+For maximum resilience, combine both: `/goal` handles bugs within each phase, the watchdog handles process-level crashes.
+
+### Using `/goal` with the orchestrator
+
+```bash
+# Self-healing phases (Claude retries on failure):
+./run_autonomous.sh --use-goal
+
+# Belt and suspenders (goal + watchdog):
+nohup ./run_autonomous.sh --use-goal --with-watchdog > /dev/null 2>&1 &
+```
+
 ## Customize for Your Project (Optional)
 
 Once you've seen the test work, adapt the orchestrator for your own tasks.
@@ -176,8 +249,14 @@ Copy the rules from [example-CLAUDE.md](example-CLAUDE.md) into your project's `
 # Foreground (see output live):
 ./run_autonomous.sh
 
+# With /goal (self-healing phases):
+./run_autonomous.sh --use-goal
+
 # Background with watchdog (overnight runs):
 nohup ./run_autonomous.sh --with-watchdog > /dev/null 2>&1 &
+
+# Maximum resilience (both):
+nohup ./run_autonomous.sh --use-goal --with-watchdog > /dev/null 2>&1 &
 
 # Monitor:
 tail -f runs/<timestamp>/master.log
@@ -195,6 +274,7 @@ tail -f runs/<timestamp>/watchdog.log
   --budget AMOUNT     Max cost per phase in USD (default: 10.00)
   --run-dir DIR       Reuse an existing run directory
   --with-watchdog     Auto-start the watchdog for crash recovery
+  --use-goal          Use /goal for self-healing phases (Claude retries on failure)
   --dry-run           Print prompts without running Claude
   -h, --help          Show help
 ```
