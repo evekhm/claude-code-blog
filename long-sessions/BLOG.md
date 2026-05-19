@@ -106,7 +106,7 @@ problem was that their output — designed for human debugging — was
 flooding the context window.
 
 ## The Fixes
-Based on the lessons learned, we built a system on three layers: rules, handoff, and
+Based on the lessons learned, the fix came down to three layers: rules, handoff, and
 orchestration.
 
 ### Layer 1: CLAUDE.md — The Project Playbook
@@ -118,7 +118,7 @@ repo root, but you can also place it in `~/.claude/CLAUDE.md` for
 user-wide rules, `.claude/CLAUDE.md` for project-level, or use
 `.claude/rules/` for modular path-scoped rules.
 
-We added context management rules ([example CLAUDE.md](example-CLAUDE.md)):
+The first step was adding context management rules ([example CLAUDE.md](example-CLAUDE.md)):
 
 ```markdown
 ## Context Management (CRITICAL for long sessions)
@@ -258,13 +258,62 @@ each phase — completely independent of any chat. Each phase is a
 new session with no memory of the chat that launched the script.
 It reads STATUS.md for context instead.
 
+### Update: `/goal` Replaces the Watchdog
+
+After the initial run, a better solution appeared:
+[`/goal`](https://code.claude.com/docs/en/goal) — a built-in
+Claude Code feature that makes the custom watchdog unnecessary.
+
+**The problem the watchdog solved**: `claude --print` runs one
+turn. If a script fails, Claude reports the error and exits with
+code 0 (Claude ran fine, even though the task failed). The
+orchestrator has no way to know the task didn't succeed. The
+original solution was a watchdog to detect failures externally
+and restart.
+
+**What `/goal` does instead**: you set a completion condition, and
+after each turn a small fast model (Haiku) evaluates whether the
+condition is met. If not, Claude automatically starts another turn.
+If a script fails, Claude sees the error, fixes it, and retries —
+all within the same phase, no external watchdog needed.
+
+```bash
+# Without /goal: one turn, Claude reports error, exits
+claude -p "Run analyze.py and save results"
+# → Claude runs script, sees NameError, reports it, done. Exit 0.
+
+# With /goal: Claude keeps working until the condition holds
+claude -p "/goal Run analyze.py. Goal: results.txt has valid JSON"
+# → Turn 1: runs script, NameError
+# → Evaluator: "results.txt doesn't exist — not met"
+# → Turn 2: fixes the bug, retries, saves results
+# → Evaluator: "results.txt has valid JSON — met!"
+```
+
+After integrating `/goal` into the orchestrator (`--use-goal`),
+testing it with the same buggy script confirmed the difference.
+Claude found the NameError, fixed `counnt` → `len(data)`, and
+retried — all within one phase, in ~37 seconds. No watchdog, no
+restarts, no diagnostic session.
+
+**The phased orchestrator still matters.** `/goal` makes each
+phase self-healing, but it doesn't solve context overflow — a
+phase that runs too long will still hit the context wall from
+Attempt 1. The orchestrator's job is to break work into fresh
+sessions. `/goal`'s job is to make each session resilient.
+
+```bash
+# The updated approach: phased orchestrator + /goal
+nohup ./run_autonomous.sh --use-goal > /dev/null 2>&1 &
+```
+
 ## Attempt 2: The Phased Approach
 
-I ran `nohup` in a terminal, started the watchdog, and went to
-sleep.
+I ran `nohup` in a terminal, started the orchestrator with `/goal`,
+and went to sleep.
 
 **All 5 phases completed successfully. Zero failures. 5 hours 44
-minutes.** The watchdog never needed to intervene. 
+minutes.** `/goal` handled the hiccups within each phase.
 
 The CLAUDE.md rules and output redirection meant Claude produced
 megabytes of experiment data while barely touching its context
@@ -273,8 +322,8 @@ budget. Each phase ran comfortably within its context window.
 ### The Meta Angle
 
 Here's the part that still impresses me: **Claude Code built its
-own reliability tooling.** The watchdog script, the orchestrator,
-the `< /dev/null` fix, the Claude-as-diagnostician pattern — all
+own reliability tooling.** The orchestrator, the `/goal` integration,
+the `< /dev/null` fix, the output redirection pattern — all
 of it was written by Claude during interactive sessions where I
 described the problem and it wrote the solution.
 
@@ -343,54 +392,6 @@ Anthropic is actively shipping solutions to many of these problems:
 
 Check Anthropic's latest docs — the managed tooling is catching
 up fast.
-
-## Update: `/goal` Replaces the Watchdog
-
-After publishing this post, I learned about
-[`/goal`](https://code.claude.com/docs/en/goal) — a built-in
-Claude Code feature that makes the custom watchdog unnecessary.
-
-**The problem the watchdog solved**: `claude --print` runs one
-turn. If a script fails, Claude reports the error and exits with
-code 0 (Claude ran fine, even though the task failed). The
-orchestrator has no way to know the task didn't succeed. So we
-built a watchdog to detect failures externally and restart.
-
-**What `/goal` does instead**: you set a completion condition, and
-after each turn a small fast model (Haiku) evaluates whether the
-condition is met. If not, Claude automatically starts another turn.
-If a script fails, Claude sees the error, fixes it, and retries —
-all within the same phase, no external watchdog needed.
-
-```bash
-# Without /goal: one turn, Claude reports error, exits
-claude -p "Run analyze.py and save results"
-# → Claude runs script, sees NameError, reports it, done. Exit 0.
-
-# With /goal: Claude keeps working until the condition holds
-claude -p "/goal Run analyze.py. Goal: results.txt has valid JSON"
-# → Turn 1: runs script, NameError
-# → Evaluator: "results.txt doesn't exist — not met"
-# → Turn 2: fixes the bug, retries, saves results
-# → Evaluator: "results.txt has valid JSON — met!"
-```
-
-We integrated `/goal` into the orchestrator (`--use-goal`) and
-tested it with the same buggy script from the watchdog test.
-Claude found the NameError, fixed `counnt` → `len(data)`, and
-retried — all within one phase, in ~37 seconds. No watchdog, no
-restarts, no diagnostic session.
-
-**The phased orchestrator still matters.** `/goal` makes each
-phase self-healing, but it doesn't solve context overflow — a
-phase that runs too long will still hit the context wall from
-Attempt 1. The orchestrator's job is to break work into fresh
-sessions. `/goal`'s job is to make each session resilient.
-
-```bash
-# The updated approach: phased orchestrator + /goal
-nohup ./run_autonomous.sh --use-goal > /dev/null 2>&1 &
-```
 
 ## Try It Yourself
 
